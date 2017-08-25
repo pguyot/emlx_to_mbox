@@ -35,9 +35,10 @@ record each message status and by reencoding attachments.
  * Generating dovecot status headers corresponding to emlx flags
    (Read/Answered/Forwared/Junk/etc.)
  * When attachments could not be found in ../Attachments/, searching harder with
-   Spotlight in ``~/Library/Mail\ Downloads/`` where Mail saves opened
-   attachments and picking up the first attachment with a matching name. The
-   script will generate a warning as it might not be the proper file.
+   Spotlight in ``~/Library/Containers/com.apple.mail/Data/Library/Mail Downloads``
+   where Mail saves opened attachments and picking up the first attachment with
+   a matching name. The script will generate a warning as it might not be the
+   proper file.
  * Re-zipping attachments that were unzipped.
 
 ## Usage:
