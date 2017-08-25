@@ -77,7 +77,7 @@ process_emlx_file(MessageID, File, Output, {AccDupes, AccMissingRemoteID, AccMis
         [<<"Return-path: <", ReturnPath0/binary>>, _] -> ReturnPath0;
         [<<"Return-path:">>, <<" <", ReturnPathTail/binary>>] ->
             hd(binary:split(ReturnPathTail, <<"\n">>));
-        _ -> <<"root@haletta.semiocast.net>">>  % default return e-mail.
+        _ -> <<"emlx_to_mbox@unknown.invalid>">>  % default return e-mail.
     end,
     [ReturnEmail, <<>>] = binary:split(ReturnPath, <<">">>),
     DateReceived = case lists:keyfind(<<"date-received">>, 1, XMLDict) of
