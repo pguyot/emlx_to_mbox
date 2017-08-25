@@ -310,6 +310,7 @@ split_multiparts(ContentType, Body) ->
     [LastPart0 | PartsR] = lists:reverse(Parts0),
     [LastPart | Epilogue] = binary:split(LastPart0, <<"--", Boundary/binary, "--\n">>),
     Parts = lists:reverse([LastPart | PartsR]),
+    % Make sure we are able to rebuild the message identically.
     Body = merge_multiparts(Boundary, Preamble, Epilogue, Parts),
     {Boundary, Preamble, Epilogue, Parts}.
 
