@@ -16,28 +16,33 @@ proprietary format to open source formats. The most well known are:
  * cosmicsoft's [binary application](http://www.cosmicsoft.net/emlxconvert.html)
    to convert mailboxes to mbox format
 
-Yet both were not updated for macOS Sierra format, and especially Attachments
-handling.
+Yet both were not updated for macOS Sierra format, and are especially not able
+to properly recover attachments.
 
-This script, written in Erlang, will convert a mailbox into mbox format (dovecot
-variant) by using known flags and reencoding attachments.
+This script, written in Erlang, will convert a mailbox into mbox format ([dovecot
+variant](https://wiki.dovecot.org/MailboxFormat/mbox)) by using known flags to
+record each message status and by reencoding attachments.
 
 ## Features
 
-emlx\_to\_mbox features include:
+``emlx_to_mbox`` features include:
 
  * Handling both V4 (macOS Sierra) and V3 formats
  * Checking every mail and generating a warning for mails with missing
    attachment(s)
- * Filtering duplicates (happening with V3 format)
- * Generating dovecot flags corresponding to emlx flags (Read/Answered/Forwared/Junk/etc.)
- * Searching hard for attachments in ~/Library/Mail\ Downloads/ and picking up
-   the first one, generating a warning when such an attachment is picked up.
+ * Filtering duplicates with identical remote-ids, favoring duplicates with
+   attachments (happening with V3 format)
+ * Generating dovecot status headers corresponding to emlx flags
+   (Read/Answered/Forwared/Junk/etc.)
+ * When attachments could not be found in ../Attachments/, searching harder with
+   Spotlight in ``~/Library/Mail\ Downloads/`` where Mail saves opened
+   attachments and picking up the first attachment with a matching name. The
+   script will generate a warning as it might not be the proper file.
  * Re-zipping attachments that were unzipped.
 
 ## Usage:
 
- * Install erlang (http://www.erlang.org).
+ * Install [Erlang/OTP](http://www.erlang.org).
 
  * Run:
 
@@ -62,3 +67,8 @@ This bug in Mail.app was reported to Apple as radr://34076819
 
 emlx format flags were [collected by jwz](https://www.jwz.org/blog/2005/07/emlx-flags/).
 In 10.12 and 10.11, additional flags (beyond 32 bits) were observed.
+
+It seems that macOS Sierra Mail.app does not track the link between opened
+attachments in ``~/Library/Mail\ Downloads/`` and their message, which could
+explain why these attachments are often duplicated. Previous versions tracked
+them in ``~/Library/Mail/V4/MailData/OpenedAttachmentsV2.plist``.
