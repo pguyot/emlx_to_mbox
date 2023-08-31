@@ -9,8 +9,8 @@ main([Dir, "-o", Mbox]) ->
     {Dupes, MissingRemoteID, MissingAttachments, _Tree} = lists:foldl(fun({MessageID, File}, Acc) ->
         try
             process_emlx_file(MessageID, File, Output, Acc)
-        catch T:V ->
-            io:format("Failed to convert message ~B at ~s\n~p\n~p\n", [MessageID, File, {T, V}, erlang:get_stacktrace()]),
+        catch T:V:StackTrace ->
+            io:format("Failed to convert message ~B at ~s\n~p\n~p\n", [MessageID, File, {T, V}, StackTrace]),
             Acc
         end
     end, {0, 0, gb_trees:empty(), gb_trees:empty()}, lists:sort(Messages)),
@@ -284,8 +284,8 @@ get_message_id(Headers) -> get_header_value(<<"Message-Id">>, Headers).
 
 get_header_value(Key, Headers) ->
     case erlang:decode_packet(httph_bin, list_to_binary([Headers, <<"\n">>]), []) of
-        {ok,{http_header,_Line,Header,undefined, Value}, Rest} ->
-            case Header of
+        {ok,{http_header,_Line, HttpField, _UnmodifiedField, Value}, Rest} ->
+            case HttpField of
                 Key -> Value;
                 _ -> get_header_value(Key, Rest)
             end;
