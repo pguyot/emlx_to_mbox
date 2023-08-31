@@ -7,6 +7,8 @@ as of macOS Sierra, this feature is broken, especially when the distant account
 is offline: messages with attachments that were extracted by Mail are not
 recovered.
 
+With macOS Ventura, the feature works much better but may occasionnaly fail.
+
 This is not new. Several tools exist to convert messages from Apple Mail's
 proprietary format to open source formats. The most well known are:
 
@@ -15,9 +17,11 @@ proprietary format to open source formats. The most well known are:
    by Pascal Robert
  * cosmicsoft's [binary application](http://www.cosmicsoft.net/emlxconvert.html)
    to convert mailboxes to mbox format
+ * Philip Katz more recent [open source NodeJS script](https://github.com/qqilihq/partial-emlx-converter)
+   to convert mailboxes to elm format
 
-Yet both were not updated for macOS Sierra format, and are especially not able
-to properly recover attachments.
+At the time of this writing, the first two were not updated for macOS Sierra format, and are especially not able
+to properly recover attachments. The third can fail on some attachment that this script is able to recover.
 
 This script, written in Erlang, will convert a mailbox into mbox format ([dovecot
 variant](https://wiki.dovecot.org/MailboxFormat/mbox)) by using known flags to
@@ -49,7 +53,7 @@ record each message status and by reencoding attachments.
 
  ``escript emlx_to_mbox.escript ~/Library/Mail/V4/UUID/Mailbox.mbox -o ~/Desktop/MailboxConverted.mbox``
 
- * You can also test the script on a single mesasge with:
+ * You can also test the script on a single message with:
  
  ``escript emlx_to_mbox.escript --single ~/Library/Mail/V4/UUID/Mailbox.mbox/Path/To/ID.emlx``
 

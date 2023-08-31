@@ -379,7 +379,7 @@ process_body(Headers, Body, File, false) ->
     % Message might be partial with .emlxpart files around (V4 format).
     Attachments = find_emlxpart(File),
     % Always process messages to scan for missing attachments (V4 format).
-    process_body_with_attachments(Headers, Body, Attachments);
+    process_body_with_attachments(File, Headers, Body, Attachments);
 process_body(Headers, Body, File, true) ->
     OpenedAttachments = find_opened_attachments(File),
     EmlxPartAttachements = find_emlxpart(File),
@@ -391,15 +391,15 @@ process_body(Headers, Body, File, true) ->
         OpenedAttachments,
         EmlxPartAttachements
     ),
-    process_body_with_attachments(Headers, Body, MergedAttachments).
+    process_body_with_attachments(File, Headers, Body, MergedAttachments).
 
-process_body_with_attachments(Headers, Body, Attachments) ->
+process_body_with_attachments(File, Headers, Body, Attachments) ->
     ContentType = get_content_type(Headers),
     case ContentType of
         <<"multipart/", _/binary>> ->
             {Boundary, Preamble, Epilogue, Parts} = split_multiparts(ContentType, Body),
             {PartsWithAttachments, [], MissingAttachments} = insert_attachments_r(
-                Parts, Attachments, [], false
+                File, Parts, Attachments, [], false
             ),
             RewrittenBody = merge_multiparts(Boundary, Preamble, Epilogue, PartsWithAttachments),
             {MissingAttachments, RewrittenBody};
@@ -657,7 +657,7 @@ wrap_lines0(Text, Columns, Acc) when byte_size(Text) > Columns ->
 wrap_lines0(Text, _Columns, Acc) ->
     list_to_binary(lists:reverse([[Text, <<"\n">>] | Acc])).
 
-insert_attachments_r(Parts, Attachments, Path, Missing) ->
+insert_attachments_r(File, Parts, Attachments, Path, Missing) ->
     {PartsWithAttachmentsR, RemainingAttachments, FinalMissing} = lists:foldl(
         fun({Ix, Part}, {AccParts, AccRemainingAttachments, AccMissing}) ->
             [Headers0, Body] = binary:split(Part, <<"\n\n">>),
@@ -680,7 +680,7 @@ insert_attachments_r(Parts, Attachments, Path, Missing) ->
                                 ContentType, Body
                             ),
                             {PartsWithAttachments, NewRemainingAttachments, NewMissing} = insert_attachments_r(
-                                SubParts, AccRemainingAttachments, CompletePath, AccMissing
+                                File, SubParts, AccRemainingAttachments, CompletePath, AccMissing
                             ),
                             RewrittenBody = merge_multiparts(
                                 Boundary, Preamble, Epilogue, PartsWithAttachments
@@ -726,8 +726,8 @@ insert_attachments_r(Parts, Attachments, Path, Missing) ->
                                                 Filename =:= undefined ->
                                                     io:format("Headers: ~s\n", [Headers]);
                                                 true ->
-                                                    io:format("Could not find attachment ~ts\n", [
-                                                        Filename
+                                                    io:format("Could not find attachment ~ts for ~s\n", [
+                                                        Filename, File
                                                     ])
                                             end,
                                             {[Part | AccParts], AccRemainingAttachments, true}
