@@ -47,7 +47,9 @@ main([Dir, "-o", Mbox]) ->
     file:close(Output);
 main(["--single", SingleMessage]) ->
     {MessageID, File} = parse_emlx_filename(SingleMessage),
-    process_emlx_file(MessageID, File, stdout, {0, 0, gb_trees:empty(), gb_trees:empty()}).
+    process_emlx_file(MessageID, File, stdout, {0, 0, gb_trees:empty(), gb_trees:empty()});
+main(["--test"]) ->
+    test().
 
 parse_emlx_filename(File) ->
     Basename = filename:basename(File, ".emlx"),
@@ -92,7 +94,7 @@ process_emlx_file(
     [Headers0, Body] = binary:split(Content, <<"\n\n">>),
     Headers = list_to_binary([Headers0, <<"\n">>]),
     RFC822MessageID = get_message_id(Headers),
-    {MissingAttachment, ProcessedBody} = process_body(Headers, Body, File, Partial),
+    {MissingAttachment, ProcessedBody, []} = process_body(Headers, Body, File, Partial),
     ContentLength = byte_size(ProcessedBody),
     ContentLengthHeader = list_to_binary([
         <<"Content-Length: ">>, integer_to_list(ContentLength), <<"\n">>
@@ -379,7 +381,7 @@ process_body(Headers, Body, File, false) ->
     % Message might be partial with .emlxpart files around (V4 format).
     Attachments = find_emlxpart(File),
     % Always process messages to scan for missing attachments (V4 format).
-    process_body_with_attachments(File, Headers, Body, Attachments);
+    process_body_with_attachments(File, [], Headers, Body, Attachments);
 process_body(Headers, Body, File, true) ->
     OpenedAttachments = find_opened_attachments(File),
     EmlxPartAttachements = find_emlxpart(File),
@@ -391,27 +393,44 @@ process_body(Headers, Body, File, true) ->
         OpenedAttachments,
         EmlxPartAttachements
     ),
-    process_body_with_attachments(File, Headers, Body, MergedAttachments).
+    process_body_with_attachments(File, [], Headers, Body, MergedAttachments).
 
-process_body_with_attachments(File, Headers, Body, Attachments) ->
+process_body_with_attachments(File, PartPath, Headers, Body, Attachments) ->
     ContentType = get_content_type(Headers),
     case ContentType of
-        <<"multipart/", _/binary>> ->
+        <<"multipart/", _/binary>> when Body =/= <<>> ->
             {Boundary, Preamble, Epilogue, Parts} = split_multiparts(ContentType, Body),
-            {PartsWithAttachments, [], MissingAttachments} = insert_attachments_r(
-                File, Parts, Attachments, [], false
+            {PartsWithAttachments, RemainingAttachments, MissingAttachments} = insert_attachments_r(
+                File, Parts, Attachments, PartPath, false
             ),
             RewrittenBody = merge_multiparts(Boundary, Preamble, Epilogue, PartsWithAttachments),
-            {MissingAttachments, RewrittenBody};
-        _ when Attachments =:= [] -> {false, Body};
+            {MissingAttachments, RewrittenBody, RemainingAttachments};
+        _ when Attachments =:= [] -> {false, Body, Attachments};
         _ ->
-            [{[1], Attachment}] = Attachments,
-            {HeadersL, BodyWithAttachment} = insert_attachment(Attachment, Headers),
-            Headers = list_to_binary(HeadersL),
-            {false, BodyWithAttachment}
+            [{AttachmentPath, Attachment} | RemainingAttachments] = Attachments,
+            case lists:split(length(PartPath), AttachmentPath) of
+                {PartPath, [1]} ->
+                    {HeadersL, BodyWithAttachment} = insert_attachment(Attachment, Headers),
+                    Headers = list_to_binary(HeadersL),
+                    {false, BodyWithAttachment, RemainingAttachments};
+                _ ->
+                    {false, <<>>, Attachments}
+            end
     end.
 
-get_content_type(Headers) -> get_header_value('Content-Type', Headers).
+get_content_type(Headers) ->
+    Value = get_header_value('Content-Type', Headers),
+    case Value of
+        undefined -> undefined;
+        _ ->
+            case binary:split(Value, <<"/">>) of
+                [Left, Right] ->
+                    LeftLC = list_to_binary(string:to_lower(binary_to_list(Left))),
+                    <<LeftLC/binary, "/", Right/binary>>;
+                [Value] -> Value
+            end
+    end.
+
 get_message_id(Headers) -> get_header_value(<<"Message-Id">>, Headers).
 
 get_header_value(Key, Headers) ->
@@ -428,16 +447,7 @@ get_header_value(Key, Headers) ->
     end.
 
 split_multiparts(ContentType, Body) ->
-    [_, BoundaryRest] = binary:split(ContentType, [<<"boundary=">>, <<"Boundary=">>]),
-    Boundary =
-        case BoundaryRest of
-            <<"\"", BoundaryRest0/binary>> ->
-                [Boundary0, _] = binary:split(BoundaryRest0, <<"\"">>),
-                Boundary0;
-            _ ->
-                [Boundary0 | _] = binary:split(BoundaryRest, [<<";">>, <<"\n">>]),
-                Boundary0
-        end,
+    Boundary = get_boundary(ContentType),
     [Preamble | Parts0] = binary:split(Body, <<"--", Boundary/binary, "\n">>, [global]),
     [LastPart0 | PartsR] = lists:reverse(Parts0),
     [LastPart | Epilogue] = binary:split(LastPart0, <<"--", Boundary/binary, "--\n">>),
@@ -445,6 +455,34 @@ split_multiparts(ContentType, Body) ->
     % Make sure we are able to rebuild the message identically.
     Body = merge_multiparts(Boundary, Preamble, Epilogue, Parts),
     {Boundary, Preamble, Epilogue, Parts}.
+
+get_boundary(ContentType) ->
+    [_Left, Right] = binary:split(ContentType, <<";">>),
+    get_boundary0(Right).
+
+get_boundary0(<<" ", Rest/binary>>) ->
+    get_boundary0(Rest);
+get_boundary0(<<"\n", Rest/binary>>) ->
+    get_boundary0(Rest);
+get_boundary0(<<"\t", Rest/binary>>) ->
+    get_boundary0(Rest);
+get_boundary0(ContentTypePart) ->
+    [Left, Right] = binary:split(ContentTypePart, <<"=">>),
+    LeftLC = string:to_lower(binary_to_list(Left)),
+    case LeftLC of
+        "boundary" ->
+            case Right of
+                <<"\"", BoundaryRest0/binary>> ->
+                    [Boundary0, _] = binary:split(BoundaryRest0, <<"\"">>),
+                    Boundary0;
+                _ ->
+                    [Boundary0 | _] = binary:split(Right, [<<";">>, <<"\n">>]),
+                    Boundary0
+            end;
+        _Other ->
+            [_NextLeft, NextRight] = binary:split(Right, <<";">>),
+            get_boundary0(NextRight)
+    end.
 
 merge_multiparts(Boundary, Preamble, Epilogue0, Multiparts) ->
     Epilogue1 =
@@ -554,37 +592,40 @@ get_filename(Headers) ->
         end,
         Headers
     ),
-    Filename = get_filename0(CDHeaders),
+    Filename = get_filename0(CDHeaders, []),
     {Tail, CDHeaders, Filename}.
 
-get_filename0([H | Tail]) ->
-    case binary:split(H, <<"filename">>) of
-        [_, <<"*0", Rest0/binary>>] ->
-            Filename0 = get_filename1(Rest0),
-            [_, <<"*1", Rest1/binary>>] = binary:split(hd(Tail), <<"filename">>),
-            nomatch = binary:match(list_to_binary(tl(Tail)), <<"filename">>),
-            Filename1 = get_filename1(Rest1),
-            FilenameQP = list_to_binary([Filename0, Filename1]),
-            qp_decode(FilenameQP);
-        [_, Rest] ->
-            Filename = get_filename1(Rest),
-            qp_decode(Filename);
-        [H] ->
-            get_filename0(Tail)
+get_filename0([<<"Content-Disposition: ", CDFirstLine/binary>> | Tail], Acc) ->
+    case binary:match(CDFirstLine, <<"filename">>) of
+        nomatch ->
+            get_filename0(Tail, Acc);
+        {Index, 8} ->
+            {_Left, Right} = split_binary(CDFirstLine, Index),
+            get_filename0([Right | Tail], Acc)
     end;
-get_filename0([]) ->
-    undefined.
+get_filename0([<<" ", H/binary>> | Tail], Acc) ->
+    get_filename0([H | Tail], Acc);
+get_filename0([<<"\t", H/binary>> | Tail], Acc) ->
+    get_filename0([H | Tail], Acc);
+get_filename0([<<"filename", FilenameBin/binary>> | Tail], Acc) ->
+    [_, FilenameVal] = binary:split(FilenameBin, <<"=">>),
+    Filename = get_filename1(FilenameVal),
+    get_filename0(Tail, [Filename | Acc]);
+get_filename0([_OtherKey | Tail], Acc) ->
+    get_filename0(Tail, Acc);
+get_filename0([], []) ->
+    undefined;
+get_filename0([], Acc) ->
+    FilenameQP = list_to_binary(lists:reverse(Acc)),
+    qp_decode(FilenameQP).
 
-get_filename1(<<"=\"", Rest/binary>>) ->
+get_filename1(<<"\"", Rest/binary>>) ->
     [Filename, _] = binary:split(Rest, <<"\"">>),
     Filename;
-get_filename1(<<"=", Rest/binary>>) ->
-    [Filename | _] = binary:split(Rest, <<";">>),
-    Filename;
-get_filename1(<<"*=utf-8''", Rest/binary>>) ->
+get_filename1(<<"utf-8''", Rest/binary>>) ->
     [FilenameEncoded | _] = binary:split(Rest, <<";">>),
     percent_decode(FilenameEncoded);
-get_filename1(<<"*=", Rest/binary>>) ->
+get_filename1(Rest) ->
     [Filename | _] = binary:split(Rest, <<";">>),
     Filename.
 
@@ -674,72 +715,81 @@ insert_attachments_r(File, Parts, Attachments, Path, Missing) ->
                     };
                 false ->
                     ContentType = get_content_type(Headers),
-                    case ContentType of
-                        <<"multipart/", _/binary>> ->
-                            {Boundary, Preamble, Epilogue, SubParts} = split_multiparts(
-                                ContentType, Body
-                            ),
-                            {PartsWithAttachments, NewRemainingAttachments, NewMissing} = insert_attachments_r(
-                                File, SubParts, AccRemainingAttachments, CompletePath, AccMissing
-                            ),
-                            RewrittenBody = merge_multiparts(
-                                Boundary, Preamble, Epilogue, PartsWithAttachments
-                            ),
-                            RewrittenPart = list_to_binary([Headers, <<"\n">>, RewrittenBody]),
-                            {[RewrittenPart | AccParts], NewRemainingAttachments, NewMissing};
-                        _ ->
-                            case binary:match(Headers, <<"\nX-Apple-Content-Length:">>) of
-                                nomatch ->
-                                    {[Part | AccParts], AccRemainingAttachments, AccMissing};
-                                _ ->
-                                    % Try harder to recover attachment.
-                                    HeaderLines = [
-                                        HeaderLine
-                                     || HeaderLine <- binary:split(Headers, <<"\n">>, [global]),
-                                        HeaderLine =/= <<>>
-                                    ],
-                                    {_HeaderLinesFiltered, _AppleContentLength,
-                                        _ContentTransferEncoding,
-                                        Filename} = parse_attachment_headers(
-                                        HeaderLines, undefined, undefined, undefined, []
-                                    ),
-                                    case lookup_open_attachment(Filename) of
-                                        {value, AttachmentFile} ->
-                                            io:format("Warning: found ~s at ~s\n", [
-                                                Filename, AttachmentFile
-                                            ]),
-                                            {RewrittenHeaders, RewrittenBody} = insert_attachment(
-                                                {file, AttachmentFile}, Headers
-                                            ),
-                                            RewrittenPart = list_to_binary([
-                                                RewrittenHeaders, <<"\n">>, RewrittenBody
-                                            ]),
-                                            {
-                                                [RewrittenPart | AccParts],
-                                                lists:keydelete(
-                                                    CompletePath, 1, AccRemainingAttachments
-                                                ),
-                                                AccMissing
-                                            };
-                                        false ->
-                                            if
-                                                Filename =:= undefined ->
-                                                    io:format("Headers: ~s\n", [Headers]);
-                                                true ->
-                                                    io:format("Could not find attachment ~ts for ~s\n", [
-                                                        Filename, File
-                                                    ])
-                                            end,
-                                            {[Part | AccParts], AccRemainingAttachments, true}
-                                    end
-                            end
-                    end
+                    insert_attachments_r1(File, ContentType, Body, Headers, CompletePath, Part, AccParts, AccRemainingAttachments, AccMissing)
             end
         end,
         {[], Attachments, Missing},
         lists:zip(lists:seq(1, length(Parts)), Parts)
     ),
     {lists:reverse(PartsWithAttachmentsR), RemainingAttachments, FinalMissing}.
+
+insert_attachments_r1(File, <<"message/rfc822">>, Body, Headers, CompletePath, _Part, AccParts, AccRemainingAttachments, AccMissing) ->
+    [SubHeaders0, SubBody] = binary:split(Body, <<"\n\n">>),
+    SubHeaders = list_to_binary([SubHeaders0, <<"\n">>]),
+    {MissingAttachments, RewrittenBody, NewRemainingAttachments} = process_body_with_attachments(File, CompletePath, SubHeaders, SubBody, AccRemainingAttachments),
+    RewrittenPart = list_to_binary([Headers, <<"\n">>, SubHeaders, <<"\n">>, RewrittenBody]),
+    {[RewrittenPart | AccParts], NewRemainingAttachments, AccMissing orelse MissingAttachments};
+insert_attachments_r1(_File, <<"multipart/", _/binary>>, <<>>, Headers, _CompletePath, _Part, AccParts, AccRemainingAttachments, AccMissing) ->
+    RewrittenPart = list_to_binary([Headers, <<"\n">>]),
+    {[RewrittenPart | AccParts], AccRemainingAttachments, AccMissing};
+insert_attachments_r1(File, <<"multipart/", _/binary>> = ContentType, Body, Headers, CompletePath, _Part, AccParts, AccRemainingAttachments, AccMissing) ->
+    {Boundary, Preamble, Epilogue, SubParts} = split_multiparts(
+        ContentType, Body
+    ),
+    {PartsWithAttachments, NewRemainingAttachments, NewMissing} = insert_attachments_r(
+        File, SubParts, AccRemainingAttachments, CompletePath, AccMissing
+    ),
+    RewrittenBody = merge_multiparts(
+        Boundary, Preamble, Epilogue, PartsWithAttachments
+    ),
+    RewrittenPart = list_to_binary([Headers, <<"\n">>, RewrittenBody]),
+    {[RewrittenPart | AccParts], NewRemainingAttachments, NewMissing};
+insert_attachments_r1(File, _ContentType, _Body, Headers, CompletePath, Part, AccParts, AccRemainingAttachments, AccMissing) ->
+    case binary:match(Headers, <<"\nX-Apple-Content-Length:">>) of
+        nomatch ->
+            {[Part | AccParts], AccRemainingAttachments, AccMissing};
+        _ ->
+            % Try harder to recover attachment.
+            HeaderLines = [
+                HeaderLine
+             || HeaderLine <- binary:split(Headers, <<"\n">>, [global]),
+                HeaderLine =/= <<>>
+            ],
+            {_HeaderLinesFiltered, _AppleContentLength,
+                _ContentTransferEncoding,
+                Filename} = parse_attachment_headers(
+                HeaderLines, undefined, undefined, undefined, []
+            ),
+            case lookup_open_attachment(Filename) of
+                {value, AttachmentFile} ->
+                    io:format("Warning: found ~s at ~s\n", [
+                        Filename, AttachmentFile
+                    ]),
+                    {RewrittenHeaders, RewrittenBody} = insert_attachment(
+                        {file, AttachmentFile}, Headers
+                    ),
+                    RewrittenPart = list_to_binary([
+                        RewrittenHeaders, <<"\n">>, RewrittenBody
+                    ]),
+                    {
+                        [RewrittenPart | AccParts],
+                        lists:keydelete(
+                            CompletePath, 1, AccRemainingAttachments
+                        ),
+                        AccMissing
+                    };
+                false ->
+                    if
+                        Filename =:= undefined ->
+                            io:format("Headers: ~s\n", [Headers]);
+                        true ->
+                            io:format("Could not find attachment ~ts for ~s\n", [
+                                Filename, File
+                            ])
+                    end,
+                    {[Part | AccParts], AccRemainingAttachments, true}
+            end
+    end.
 
 lookup_open_attachment(undefined) ->
     false;
@@ -766,3 +816,8 @@ lookup_open_attachment(File) ->
                 [FirstResult | _] -> {value, FirstResult}
             end
     end.
+
+test() ->
+    <<"336200047-1726718622-1481031388=:5713">> = get_boundary(<<"multipart/MIXED; BOUNDARY=\"336200047-1726718622-1481031388=:5713\"">>),
+    <<"_=615s606g5m2q6e2o4s691i1t723c663o=_">> = get_boundary(<<"multipart/alternative;\n\tboundary=\"_=615s606g5m2q6e2o4s691i1t723c663o=_\"">>),
+    <<"_=615s606g5m2q6e2o4s691i1t723c663o=_">> = get_boundary(<<"multipart/alternative;\n boundary=\"_=615s606g5m2q6e2o4s691i1t723c663o=_\"">>).
